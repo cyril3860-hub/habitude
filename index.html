@@ -561,16 +561,27 @@ function renderCal() {
     cell.className='cal-cell';
     cell.textContent=d;
     if(isFuture){ cell.classList.add('future'); }
-    else if(isToday){ cell.classList.add('today'); }
     else if(day){
       const s=calcScore(day.checks);
-      monthScores.push(s);
       if(day.lt!==undefined) monthLT.push(day.lt);
-      if(s===100) cell.classList.add('perfect');
-      else if(s>=60) cell.classList.add('good');
-      else if(s>=40) cell.classList.add('mid');
-      else cell.classList.add('bad');
-    }
+      if(isToday){
+        cell.classList.add('today');
+        // Colorier aussi si verdict généré
+        if(day.verdict){
+          monthScores.push(s);
+          if(s===100) cell.style.background='#2a4a1a';
+          else if(s>=60) cell.style.background='#1a3010';
+          else if(s>=40) cell.style.background='#2a1e0a';
+          else cell.style.background='#3a1010';
+        }
+      } else {
+        monthScores.push(s);
+        if(s===100) cell.classList.add('perfect');
+        else if(s>=60) cell.classList.add('good');
+        else if(s>=40) cell.classList.add('mid');
+        else cell.classList.add('bad');
+      }
+    } else if(isToday){ cell.classList.add('today'); }
     grid.appendChild(cell);
   }
   const avg=monthScores.length?Math.round(monthScores.reduce((a,b)=>a+b,0)/monthScores.length):0;
@@ -741,75 +752,101 @@ function renderMorning(){
   }
 }
 
-async function genVerdict(){
-  const today=getToday();
-  const sliderEl=document.getElementById('lt-slider'); if(sliderEl) today.lt=parseInt(sliderEl.value);
-  saveToday(today);
+function genVerdict(){
   const btn=document.getElementById('verdict-btn');
   btn.disabled=true; btn.textContent='Génération...';
-  document.getElementById('verdict-wrap').style.display='block';
-  const failed=HABITS.filter(h=>!today.checks[h.id]).map(h=>h.name);
-  const passed=HABITS.filter(h=>today.checks[h.id]).map(h=>h.name);
+
+  const today=getToday();
+  const sliderEl=document.getElementById('lt-slider');
+  if(sliderEl) today.lt=parseInt(sliderEl.value);
+  saveToday(today);
+
+  const passed=HABITS.filter(h=>today.checks[h.id]===true);
+  const failed=HABITS.filter(h=>today.checks[h.id]===false);
+  const passedIds=passed.map(h=>h.id);
+  const failedIds=failed.map(h=>h.id);
   const score=calcScore(today.checks);
   const streak=calcStreak();
-  const lt=today.lt;
+  const lt=today.lt||5;
   const benefice=today.benefice||0;
-  const muscles=today.muscles&&today.muscles.length?today.muscles.join(', '):'non renseigné';
+  const muscles=today.muscles||[];
   const ressenti=today.ressenti||'';
   const avance=today.avance||'';
-  const prompt=`Tu es un coach brutal et honnête pour Cyril, 23 ans, entrepreneur à Grenoble qui vend Ativo (SaaS QR code pour restaurants) et fait du dropshipping ecommerce. Son objectif à long terme : acheter une maison.
 
-Aujourd'hui :
-- Habitudes réussies : ${passed.join(', ')||'aucune'}
-- Habitudes ratées : ${failed.join(', ')||'aucune'}
-- Score : ${score}%
-- Streak actuel : ${streak} jours
-- Score long terme (avancement sur 10 ans) : ${lt}/10
-- Bénéfice du jour : ${benefice}€
-- Muscles travaillés aujourd'hui : ${muscles}
-- Ressenti / contraintes du jour : ${ressenti||'non renseigné'}
-- Ce qui l'a fait avancer : ${avance||'non renseigné'}
-
-Génère deux paragraphes courts, percutants, personnalisés :
-1. "CE QUI FOUT LE CAMP" : critique directe et sans pitié sur les échecs. Mentionne le streak si pertinent. Sois spécifique, pas générique.
-2. "CE QUI TIENT" : valorise ce qui a marché. Lie aux objectifs long terme (maison, Ativo).
-
-Réponds UNIQUEMENT en JSON valide sans markdown :
-{"bad":"texte ici","good":"texte ici"}
-
-Si tout est réussi, bad peut être une mise en garde ou un défi pour demain. Maximum 60 mots par champ. Tutoie Cyril. Sois direct, pas condescendant.`;
-
-  try {
-    const vbad=document.getElementById('v-bad'), vgood=document.getElementById('v-good');
-    vbad.style.display='block'; vgood.style.display='block';
-    document.getElementById('v-bad-text').innerHTML='<span class="loading-text">Analyse en cours...</span>';
-    document.getElementById('v-good-text').innerHTML='<span class="loading-text">Analyse en cours...</span>';
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:prompt}]})
-    });
-    const data=await resp.json();
-    const txt=data.content.filter(c=>c.type==='text').map(c=>c.text).join('');
-    const clean=txt.replace(/```json|```/g,'').trim();
-    const parsed=JSON.parse(clean);
-    document.getElementById('v-bad-text').textContent=parsed.bad||'';
-    document.getElementById('v-good-text').textContent=parsed.good||'';
-    today.verdict={bad:parsed.bad,good:parsed.good};
-    saveToday(today);
-    btn.textContent='Verdict généré ✓';
-    // Marquer visuellement les non-cochées en ❌
-    HABITS.forEach(h=>{
-      const el=document.getElementById('check-'+h.id);
-      if(el && !today.checks[h.id]){ el.textContent='❌'; el.classList.add('fail'); }
-    });
-    syncToSheets(today);
-  } catch(e){
-    document.getElementById('v-bad-text').textContent='Erreur de génération. Vérifie ta connexion internet.';
-    document.getElementById('v-good-text').textContent='';
-    btn.disabled=false; btn.textContent='Réessayer';
+  let sportRatesSemaine=0, travailRatesSemaine=0;
+  for(let i=1;i<=7;i++){
+    const d=new Date(); d.setDate(d.getDate()-i);
+    const k=keyForDate(d.getFullYear(),d.getMonth(),d.getDate());
+    const day=getData(k);
+    if(day&&day.checks){
+      if(day.checks['h7']===false) sportRatesSemaine++;
+      if(day.checks['h1']===false) travailRatesSemaine++;
+    }
   }
+
+  let badParts=[];
+  if(failedIds.includes('h1') && travailRatesSemaine>=2)
+    badParts.push(`6h de travail raté — ${travailRatesSemaine+1}e fois cette semaine. Ativo ne se vend pas tout seul.`);
+  else if(failedIds.includes('h1'))
+    badParts.push("Pas de 6h de travail concentré. Une journée perdue sur Ativo c'est un client de moins.");
+  if(failedIds.includes('h7') && sportRatesSemaine>=2)
+    badParts.push(`Sport annulé — ${sportRatesSemaine+1}e fois cette semaine. Dans 6 mois le calendrier ressemble à quoi ?`);
+  else if(failedIds.includes('h7'))
+    badParts.push("Sport encore raté. Une habitude ca se construit, pas ca se reporte.");
+  if(failedIds.includes('h3'))
+    badParts.push("T'as encore trainé après 1h. Le réveil demain va être difficile.");
+  if(failedIds.includes('h5'))
+    badParts.push("Réveil après 11h15 — la matinée morte avant d'avoir commencé.");
+  if(failedIds.includes('h2'))
+    badParts.push("Pas lu tes 10 pages. 10 minutes, c'est tout ce que ca demande.");
+  if(streak>7 && score<50)
+    badParts.push(`Streak de ${streak} jours en danger. Une journée comme ca et tu repars de zéro.`);
+  if(lt<=3)
+    badParts.push(`Score long terme à ${lt}/10. Journée de bricolage ou journée qui construit quelque chose ?`);
+  if(benefice===0 && failedIds.includes('h1'))
+    badParts.push("0 euro généré, 6h non faites. Les deux vont ensemble.");
+  if(failed.length===0 && score===100)
+    badParts.push("Journée parfaite. Reproduis ca demain — c'est là que la plupart lâchent.");
+  if(badParts.length===0 && failed.length>0)
+    badParts.push(`${failed.map(h=>h.name).join(', ')} ratés. Chaque case vide a un coût.`);
+
+  let goodParts=[];
+  if(passedIds.includes('h1') && passedIds.includes('h2'))
+    goodParts.push("6h de travail et 10 pages lus — les deux trucs qui construisent ton actif. C'est ca qui comptera dans 3 ans.");
+  else if(passedIds.includes('h1'))
+    goodParts.push("6h de travail concentré tenu — Ativo avance.");
+  else if(passedIds.includes('h2'))
+    goodParts.push("10 pages lues. Petite habitude, gros effet cumulé.");
+  if(passedIds.includes('h7') && muscles.length>0)
+    goodParts.push(`Sport fait — ${muscles.join(', ')} travaillés.`);
+  else if(passedIds.includes('h7'))
+    goodParts.push("Sport coché. Direct sur ton énergie et ta discipline.");
+  if(streak>=7)
+    goodParts.push(`${streak} jours de streak — chaque jour rend la série plus difficile à briser.`);
+  if(benefice>0)
+    goodParts.push(`${benefice}€ générés aujourd'hui. Chaque euro compte vers l'apport.`);
+  if(avance!=='')
+    goodParts.push(`Ce qui t'a fait avancer : "${avance}"`);
+  if(lt>=7)
+    goodParts.push(`Score long terme à ${lt}/10 — tu construis quelque chose de concret.`);
+  if(goodParts.length===0)
+    goodParts.push("Journée difficile. Demain tu repars avec les mêmes 10 cases — tout se rattrape.");
+
+  const bad=badParts.slice(0,2).join(' ');
+  const good=goodParts.slice(0,2).join(' ');
+
+  document.getElementById('verdict-wrap').style.display='block';
+  document.getElementById('v-bad').style.display='block';
+  document.getElementById('v-good').style.display='block';
+  document.getElementById('v-bad-text').textContent=bad;
+  document.getElementById('v-good-text').textContent=good;
+
+  today.verdict={bad,good};
+  saveToday(today);
+  btn.textContent='Verdict généré ✓';
+  syncToSheets(today);
 }
+
 
 async function syncToSheets(today){
   const url=localStorage.getItem('sheets_url');
